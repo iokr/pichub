@@ -1,0 +1,17 @@
+.git
+.idea
+.vscode
+bin
+dist
+web/node_modules
+web/dist
+internal/web/dist
+data
+config.yaml
+*.log
+*.exe
+desc
+README.md
+Dockerfile
+docker-compose.yml
+.dockerignore

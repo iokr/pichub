@@ -1,0 +1,39 @@
+// 响应式断点混入。使用方式：@use '@/styles/mixins' as *;
+$bp-mobile: 767.98px;
+$bp-tablet: 1199.98px;
+
+@mixin mobile {
+  @media (max-width: $bp-mobile) {
+    @content;
+  }
+}
+
+@mixin tablet {
+  @media (min-width: 768px) and (max-width: $bp-tablet) {
+    @content;
+  }
+}
+
+@mixin desktop {
+  @media (min-width: 1200px) {
+    @content;
+  }
+}
+
+@mixin below-desktop {
+  @media (max-width: $bp-tablet) {
+    @content;
+  }
+}
+
+@mixin card {
+  background: var(--ph-fill-card);
+  border: 1px solid var(--ph-border-light);
+  border-radius: var(--ph-radius-lg);
+}
+
+@mixin ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

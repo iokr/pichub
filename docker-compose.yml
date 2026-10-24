@@ -1,0 +1,82 @@
+name: pichub
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: pichub-mysql
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-pichub_root_pass}
+      MYSQL_DATABASE: pichub
+      MYSQL_USER: pichub
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-pichub_pass}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - pichub
+
+  redis:
+    image: redis:7-alpine
+    container_name: pichub-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "900", "1"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - pichub
+
+  pichub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${PICHUB_VERSION:-1.0.0}
+        BUILD_TIME: ${PICHUB_BUILD_TIME:-unknown}
+    image: pichub:${PICHUB_VERSION:-latest}
+    container_name: pichub
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${PICHUB_PORT:-8080}:8080"
+    volumes:
+      - ./configs/config.docker.yaml:/app/config.yaml:ro
+      - pichub_data:/app/data
+    environment:
+      TZ: Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - pichub
+
+volumes:
+  mysql_data:
+  redis_data:
+  pichub_data:
+
+networks:
+  pichub:
+    driver: bridge

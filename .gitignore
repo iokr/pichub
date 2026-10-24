@@ -31,3 +31,30 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# 依赖
+web/node_modules/
+web/dist/
+bin/
+
+# 运行产出的数据与配置
+data/
+config.yaml
+configs/config.local.yaml
+
+# 内嵌前端产物（由 make web 生成，仅保留占位文件）
+internal/web/dist/*
+!internal/web/dist/.gitkeep
+
+# 日志与临时文件
+*.log
+*.exe
+*.test
+*.out
+coverage.*
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

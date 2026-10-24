@@ -1,0 +1,52 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 2px 12px rgba(15,35,95,.08);">
+          <tr>
+            <td style="padding:28px 32px 8px;">
+              <div style="font-size:20px;font-weight:600;color:#303133;">{{.SiteName}}</div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 32px 0;">
+              <div style="font-size:18px;font-weight:600;color:#303133;">{{.Title}}</div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 32px 0;color:#606266;font-size:14px;line-height:1.8;">
+              <p style="margin:0 0 10px;">您好，{{.Username}}：</p>
+              <p style="margin:0 0 10px;">{{.Intro}}</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px 0;">
+              <a href="{{.ActionURL}}" style="display:inline-block;padding:12px 28px;background:#409EFF;color:#ffffff;text-decoration:none;border-radius:8px;font-size:14px;">{{.ActionText}}</a>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px 0;color:#909399;font-size:13px;line-height:1.7;">
+              <p style="margin:0 0 8px;">如果按钮无法点击，请复制以下链接到浏览器打开：</p>
+              <p style="margin:0 0 8px;word-break:break-all;color:#409EFF;">{{.ActionURL}}</p>
+              <p style="margin:0;">链接 {{.ExpireMinutes}} 分钟内有效。如非本人操作，请忽略本邮件。</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:24px 32px 28px;color:#b1b3b8;font-size:12px;border-top:1px solid #f0f2f5;margin-top:24px;">
+              此邮件由 {{.SiteName}} 系统自动发送，请勿直接回复。
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+{{end}}

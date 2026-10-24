@@ -1,0 +1,19 @@
+-- 回滚初始化 Schema
+DROP TABLE IF EXISTS `invites`;
+DROP TABLE IF EXISTS `system_settings`;
+DROP TABLE IF EXISTS `operation_logs`;
+DROP TABLE IF EXISTS `upload_counters`;
+DROP TABLE IF EXISTS `image_referer_daily`;
+DROP TABLE IF EXISTS `image_referers`;
+DROP TABLE IF EXISTS `shares`;
+DROP TABLE IF EXISTS `image_tags`;
+DROP TABLE IF EXISTS `tags`;
+DROP TABLE IF EXISTS `images`;
+DROP TABLE IF EXISTS `albums`;
+DROP TABLE IF EXISTS `storage_configs`;
+DROP TABLE IF EXISTS `s3_credentials`;
+DROP TABLE IF EXISTS `api_tokens`;
+DROP TABLE IF EXISTS `email_logs`;
+DROP TABLE IF EXISTS `email_tokens`;
+DROP TABLE IF EXISTS `users`;
+DROP TABLE IF EXISTS `user_groups`;

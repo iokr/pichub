@@ -1,0 +1,59 @@
+:root {
+  --ph-primary: #409eff;
+  --ph-primary-hover: #66b1ff;
+  --ph-primary-active: #3a8ee6;
+  --ph-primary-light-3: #79bbff;
+  --ph-primary-light-5: #a0cfff;
+  --ph-primary-light-7: #c6e2ff;
+  --ph-primary-light-8: #d9ecff;
+  --ph-primary-light-9: #ecf5ff;
+
+  --ph-text-primary: #1f2329;
+  --ph-text-regular: #4e5969;
+  --ph-text-secondary: #86909c;
+  --ph-text-placeholder: #c9cdd4;
+  --ph-border: #e5e6eb;
+  --ph-border-light: #f2f3f5;
+  --ph-fill: #f7f8fa;
+  --ph-fill-card: #ffffff;
+  --ph-fill-hover: #f2f3f5;
+
+  --ph-success: #00b42a;
+  --ph-warning: #ff7d00;
+  --ph-danger: #f53f3f;
+  --ph-info: #86909c;
+
+  --ph-radius-sm: 4px;
+  --ph-radius-md: 8px;
+  --ph-radius-lg: 12px;
+  --ph-radius-xl: 16px;
+  --ph-radius-full: 9999px;
+
+  --ph-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --ph-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --ph-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+
+  --ph-topbar-height: 64px;
+  --ph-tabbar-height: 56px;
+  --ph-sidebar-width: 220px;
+  --ph-sidebar-collapsed: 64px;
+  --ph-content-max: 1400px;
+
+  --ph-gradient-brand: linear-gradient(135deg, #409eff 0%, #667eea 100%);
+}
+
+html.dark {
+  --ph-text-primary: #e5e6eb;
+  --ph-text-regular: #c9cdd4;
+  --ph-text-secondary: #86909c;
+  --ph-text-placeholder: #5f6169;
+  --ph-border: #333335;
+  --ph-border-light: #2a2a2c;
+  --ph-fill: #101014;
+  --ph-fill-card: #1f1f23;
+  --ph-fill-hover: #2a2a2c;
+
+  --ph-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --ph-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --ph-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+}

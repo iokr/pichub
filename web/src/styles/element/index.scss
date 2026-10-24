@@ -1,0 +1,93 @@
+// Element Plus 全量引入后，通过 CSS 变量把主题对齐到设计令牌。
+:root {
+  --el-color-primary: var(--ph-primary);
+  --el-color-primary-light-3: var(--ph-primary-light-3);
+  --el-color-primary-light-5: var(--ph-primary-light-5);
+  --el-color-primary-light-7: var(--ph-primary-light-7);
+  --el-color-primary-light-8: var(--ph-primary-light-8);
+  --el-color-primary-light-9: var(--ph-primary-light-9);
+  --el-color-primary-dark-2: var(--ph-primary-active);
+
+  --el-color-success: var(--ph-success);
+  --el-color-warning: var(--ph-warning);
+  --el-color-danger: var(--ph-danger);
+  --el-color-error: var(--ph-danger);
+  --el-color-info: var(--ph-info);
+
+  --el-text-color-primary: var(--ph-text-primary);
+  --el-text-color-regular: var(--ph-text-regular);
+  --el-text-color-secondary: var(--ph-text-secondary);
+  --el-text-color-placeholder: var(--ph-text-placeholder);
+  --el-text-color-disabled: var(--ph-text-placeholder);
+
+  --el-border-color: var(--ph-border);
+  --el-border-color-light: var(--ph-border-light);
+  --el-border-color-lighter: var(--ph-border-light);
+  --el-border-color-extra-light: var(--ph-border-light);
+  --el-border-color-hover: var(--ph-primary-light-5);
+
+  --el-fill-color: var(--ph-fill);
+  --el-fill-color-light: var(--ph-fill-hover);
+  --el-fill-color-lighter: var(--ph-fill);
+  --el-fill-color-blank: var(--ph-fill-card);
+
+  --el-bg-color: var(--ph-fill-card);
+  --el-bg-color-page: var(--ph-fill);
+  --el-bg-color-overlay: var(--ph-fill-card);
+
+  --el-border-radius-base: var(--ph-radius-md);
+  --el-border-radius-small: var(--ph-radius-sm);
+  --el-border-radius-round: 20px;
+  --el-font-family: var(--ph-font-family);
+  --el-box-shadow-light: var(--ph-shadow-sm);
+  --el-box-shadow: var(--ph-shadow-md);
+  --el-box-shadow-dark: var(--ph-shadow-lg);
+}
+
+html.dark {
+  --el-mask-color: rgba(0, 0, 0, 0.8);
+  --el-mask-color-extra-light: rgba(0, 0, 0, 0.3);
+}
+
+.el-button {
+  font-weight: 500;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out, transform 150ms ease-out;
+}
+
+.el-button--primary:not(.is-disabled):hover {
+  transform: translateY(-1px);
+}
+
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  border-radius: var(--ph-radius-md);
+}
+
+.el-card {
+  border-color: var(--ph-border-light);
+  border-radius: var(--ph-radius-lg);
+}
+
+.el-dialog,
+.el-message-box {
+  border-radius: var(--ph-radius-lg);
+}
+
+.el-drawer {
+  --el-drawer-bg-color: var(--ph-fill-card);
+}
+
+.el-table {
+  --el-table-border-color: var(--ph-border-light);
+  --el-table-header-bg-color: var(--ph-fill);
+  --el-table-row-hover-bg-color: var(--ph-fill-hover);
+}
+
+.el-tag {
+  border-radius: var(--ph-radius-sm);
+}
+
+.el-menu {
+  border-right: none;
+}
