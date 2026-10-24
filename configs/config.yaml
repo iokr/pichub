@@ -1,0 +1,296 @@
+# ============================================================================
+# PicHub 图床系统配置文件
+# 安全提示：本文件包含敏感信息，请设置权限为 0600
+#   chmod 600 config.yaml && chown pichub:pichub config.yaml
+# ============================================================================
+
+# ---------------------------- 站点 ----------------------------
+site:
+  name: "PicHub"
+  url: "http://192.168.1.12:8080"
+  base_path: "/"
+  description: "简洁优雅的图床系统"
+  logo_url: ""
+  icp: ""
+
+# ---------------------------- 服务 ----------------------------
+server:
+  addr: "0.0.0.0:8080"
+  mode: "release"                       # debug / release / test
+  read_timeout: 60s
+  write_timeout: 120s
+  idle_timeout: 120s
+  max_header_bytes: 1048576
+  trusted_proxies:
+    - "127.0.0.1"
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+
+# ---------------------------- 数据库 ----------------------------
+database:
+  host: "139.196.16.26"
+  port: 3306
+  username: "root"
+  password: "xiaodai521"
+  database: "pichub"
+  charset: "utf8mb4"
+  collation: "utf8mb4_general_ci"
+  loc: "UTC"
+  parse_time: true
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: 30m
+  conn_max_idle_time: 10m
+  slow_threshold: 200ms
+  log_level: "warn"                     # silent / error / warn / info
+
+# ---------------------------- Redis ----------------------------
+redis:
+  addr: "139.196.16.26:16379"
+  password: ""
+  db: 0
+  pool_size: 50
+  min_idle_conns: 10
+  dial_timeout: 5s
+  read_timeout: 3s
+  write_timeout: 3s
+  key_prefix: "pichub:"
+
+# ---------------------------- 安全 ----------------------------
+security:
+  jwt_secret: "7e243372061115168673a2da42edc4358ef1e907521b5e66eb4c18245860e8cd"
+  secret_key: "YBkPR3tFmZ7nPAFjpSeeumXuXZtaIposirvMHSzRNSk="
+  jwt_access_ttl: "2h"
+  jwt_refresh_ttl: "168h"
+  url_sign_secret: "b2fc985d3a17dec834254444318eef8390e6591dde28bde6e4e923791b258ba1"
+  bcrypt_cost: 10
+  password_min_length: 8
+  password_require_letter: true
+  password_require_digit: true
+  password_require_special: false
+  login_max_fails: 5
+  login_lock_duration: 10m
+  auto_generate_secrets: true           # 密钥为空时自动生成并回写
+  rate_limit:
+    enabled: true
+    login_per_minute: 10
+    register_per_hour: 10
+    upload_per_minute: 60
+    api_per_minute: 300
+    image_per_minute: 600
+
+# ---------------------------- 注册 ----------------------------
+register:
+  enabled: true
+  mode: "open"                          # open / invite
+  require_email_verify: "force"         # off / soft / force
+  default_group_id: 1
+  ip_limit_per_day: 3
+  username_min_length: 3
+  username_max_length: 32
+  username_pattern: "^[a-zA-Z0-9_-]+$"
+  reserved_usernames: [admin, root, system, api, www, test, support]
+  email_domain_blocklist:
+    - "tempmail.com"
+    - "10minutemail.com"
+    - "guerrillamail.com"
+
+# ---------------------------- 验证码 ----------------------------
+captcha:
+  enabled: true
+  type: "string"                        # string / math / chinese
+  length: 4
+  width: 240
+  height: 80
+  noise_count: 20
+  line_count: 3
+  expire_seconds: 300
+  login_trigger_fails: 2
+  store_driver: "redis"                 # redis / memory
+
+# ---------------------------- 上传 ----------------------------
+upload:
+  default_visibility: "public"
+  max_file_size: 10485760
+  allowed_extensions: [jpg, jpeg, png, gif, webp, bmp, svg, avif, ico]
+  allow_svg: false
+  chunk_size: 5242880
+  max_chunk_count: 1000
+  dedup_enabled: true
+  dedup_scope: "user"                   # user / global
+  keep_origin_name: true
+  concurrent_limit: 3
+
+# ---------------------------- 存储 ----------------------------
+storage:
+  # 默认使用本地存储
+  default_driver: "local"
+  default_strategy_name: "本地存储"
+  allow_user_strategy: false
+
+  local:
+    root_path: "./data/uploads"
+    path_prefix: "uploads"
+    url_prefix: "/i"
+    thumb_path: "./data/thumbs"
+    dir_permission: 0755
+    file_permission: 0644
+    path_template: "{prefix}/{yyyy}/{MM}/{dd}/{hash2}/{hash}.{ext}"
+
+  # 以下驱动默认不启用，需要时切换 default_driver
+  s3:
+    endpoint: ""
+    region: "us-east-1"
+    bucket: ""
+    access_key: ""
+    secret_key: ""
+    path_style: false
+    use_ssl: true
+    public_url: ""
+
+  oss:
+    endpoint: ""
+    bucket: ""
+    access_key: ""
+    secret_key: ""
+    public_url: ""
+
+  cos:
+    endpoint: ""
+    bucket: ""
+    access_key: ""
+    secret_key: ""
+    public_url: ""
+
+  webdav:
+    url: ""
+    username: ""
+    password: ""
+    public_url: ""
+
+# ---------------------------- 图片处理 ----------------------------
+image:
+  thumbnail:
+    enabled: true
+    sizes:
+      - {name: "small",  width: 200}
+      - {name: "medium", width: 800}
+      - {name: "large",  width: 1600}
+    format: "webp"
+    quality: 82
+
+  dynamic:
+    enabled: true
+    max_width: 4096
+    max_height: 4096
+    default_quality: 85
+    allowed_formats: [webp, jpeg, png, avif]
+    cache_enabled: true
+    cache_dir: "./data/cache/imageproc"
+    cache_max_size: 10737418240
+    cache_ttl: "168h"
+
+  watermark:
+    enabled: false
+    type: "text"
+    text: ""
+    image_path: ""
+    position: "bottom-right"
+    opacity: 0.5
+    font_size: 24
+    color: "#FFFFFF"
+
+  anti_leech:
+    enabled: false
+    allow_empty_referer: true
+    referer_whitelist: []
+    block_action: "redirect"            # redirect / forbidden
+
+# ---------------------------- 引用统计 ----------------------------
+referer:
+  enabled: true
+  max_per_image: 200
+  buffer_size: 10000
+  flush_interval: 60s
+  daily_retain_days: 180
+  user_can_disable: true
+  exclude_bots: true
+  bot_user_agents: [Googlebot, bingbot, Baiduspider, YandexBot, Bytespider, DuckDuckBot]
+
+# ---------------------------- 邮件 ----------------------------
+mail:
+  enabled: false                        # 启用邮箱验证时需设为 true
+  host: "smtp.example.com"
+  port: 465
+  username: "noreply@example.com"
+  password: ""
+  from_name: "PicHub"
+  from_email: "noreply@example.com"
+  encryption: "ssl"                     # ssl / starttls / none
+  daily_limit: 500
+  timeout: 10s
+  retry_times: 3
+
+# ---------------------------- S3 兼容网关 ----------------------------
+s3_gateway:
+  enabled: true
+  path_prefix: "/s3"
+  region: "us-east-1"
+  clock_skew: 15m
+  replay_window: 15m
+  allow_multipart: true
+  part_size: 5242880
+
+# ---------------------------- 定时任务 ----------------------------
+cron:
+  enabled: true
+  trash_cleanup:
+    enabled: true
+    schedule: "0 3 * * *"
+    retain_days: 30
+  referer_aggregate:
+    enabled: true
+    schedule: "0 4 * * *"
+  cache_cleanup:
+    enabled: true
+    schedule: "0 5 * * *"
+  email_log_cleanup:
+    enabled: true
+    schedule: "0 6 * * *"
+    retain_days: 30
+  operation_log_cleanup:
+    enabled: true
+    schedule: "0 6 * * 0"
+    retain_days: 90
+
+# ---------------------------- 队列 ----------------------------
+queue:
+  worker_count: 4
+  max_retry: 3
+  retry_delay: 30s
+  task_timeout: 300s
+
+# ---------------------------- 迁移 ----------------------------
+migrate:
+  on_start: true
+
+# ---------------------------- 日志 ----------------------------
+log:
+  level: "info"
+  format: "json"                        # json / console
+  output: "both"                        # stdout / file / both
+  file_path: "./data/logs/pichub.log"
+  max_size: 100
+  max_backups: 30
+  max_age: 30
+  compress: true
+  color: false
+  caller: true
+
+# ---------------------------- 监控 ----------------------------
+monitor:
+  pprof_enabled: false
+  pprof_addr: "127.0.0.1:6060"
+  metrics_enabled: false
+  metrics_path: "/metrics"
