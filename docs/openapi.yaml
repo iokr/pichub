@@ -1,0 +1,3148 @@
+openapi: 3.0.3
+info:
+  title: PicHub 后端服务 API
+  version: 1.0.0
+  description: |
+    PicHub 自托管图床系统的后端 HTTP 接口定义，覆盖 REST API、图片直出与 S3 兼容网关。
+
+    ## 统一响应
+    除图片直出、健康检查与 S3 网关外，所有接口返回 `{ code, message, data }`：
+    `code` 为业务错误码，`0` 表示成功；`data` 为业务数据，无数据时省略；每个响应都带 `X-Request-ID` 响应头。
+
+    ## 认证
+    需要登录的接口通过 `Authorization: Bearer <token>` 传递凭据，支持两类凭据：
+    JWT 访问令牌（登录/注册/刷新接口返回，默认有效期 2 小时）与以 `ph_` 开头的 API 令牌
+    （受 scope 限制，接口上以 `x-required-scope` 标注）。
+
+    ## 限流
+    基于 Redis 固定窗口实现，超限返回 `42900` 与 `Retry-After` 响应头。
+    默认阈值：注册 10 次/小时（IP）、登录 10 次/分钟（IP）、上传 60 次/分钟（用户）、
+    其他需登录接口 300 次/分钟（用户）、图片直出 600 次/分钟（IP）。
+servers:
+  - url: http://localhost:8080
+    description: 本地默认地址，生产环境请替换为实际站点地址
+tags:
+  - name: 公共
+    description: 健康检查与站点公开配置
+  - name: 认证
+    description: 注册、登录、令牌刷新与账号找回
+  - name: 用户
+    description: 当前用户资料、密码与用量
+  - name: 上传
+    description: 单图、秒传、远程拉取与分片上传
+  - name: 图片
+    description: 图片检索、编辑、回收站与引用统计
+  - name: 相册
+    description: 相册管理
+  - name: 标签
+    description: 标签管理
+  - name: 令牌
+    description: API 令牌与 S3 凭据
+  - name: 分享
+    description: 图片与相册分享
+  - name: 存储
+    description: 存储策略管理
+  - name: 统计
+    description: 引用来源统计
+  - name: 管理端
+    description: 管理员接口，需要 role=1
+  - name: 图片直出
+    description: 原图、缩略图与动态处理
+  - name: S3 网关
+    description: S3 兼容接口，使用 AWS Signature V4
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      tags: [公共]
+      summary: 存活探针
+      security: []
+      responses:
+        '200':
+          description: 服务存活
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, example: ok}
+
+  /readyz:
+    get:
+      tags: [公共]
+      summary: 就绪探针
+      description: 检查数据库与 Redis 可用性。
+      security: []
+      responses:
+        '200':
+          description: 依赖就绪
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, example: ready}
+        '503':
+          description: 依赖不可用
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, example: unavailable}
+                  error: {type: string}
+
+  /api/v1/site:
+    get:
+      tags: [公共]
+      summary: 站点公开配置
+      description: 前端初始化站点名称、注册开关、验证码开关、上传限制等。
+      security: []
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SiteEnvelope'}
+
+  /api/v1/auth/captcha:
+    get:
+      tags: [认证]
+      summary: 获取图片验证码
+      description: 验证码未启用时返回 `40001 验证码未启用`。
+      security: []
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptchaEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/auth/register:
+    post:
+      tags: [认证]
+      summary: 注册
+      description: |
+        注册关闭时返回 `40300 注册通道已关闭`；同一 IP 24 小时内注册数量受限（默认 3）。
+        首个注册用户自动成为管理员；邮箱验证级别为 `force` 时账号初始状态为 `2`（待验证）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, email, password]
+              properties:
+                username:
+                  type: string
+                  minLength: 3
+                  maxLength: 32
+                  description: "3-32 位，仅 [a-zA-Z0-9_-]，不能使用保留名"
+                email: {type: string, format: email}
+                password:
+                  type: string
+                  description: 默认至少 8 位且同时包含字母与数字
+                captcha_id: {type: string, description: 验证码启用时必填}
+                captcha_code: {type: string, description: 验证码启用时必填}
+                invite_code: {type: string, description: 注册模式为 invite 时必填}
+      responses:
+        '200':
+          description: 注册成功，直接返回登录态
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuthEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/Internal'}
+
+  /api/v1/auth/login:
+    post:
+      tags: [认证]
+      summary: 登录
+      description: |
+        同一 IP 连续失败达到 `security.login_max_fails`（默认 5）次后锁定 10 分钟并返回 `42900`；
+        连续失败达到 `captcha.login_trigger_fails`（默认 2）次后要求验证码，缺失返回 `40020`；
+        账号被禁用返回 `40300`；邮箱验证级别为 `force` 且未验证返回 `40301`。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                account: {type: string, description: 用户名或邮箱，与 username 二选一}
+                username: {type: string, description: 兼容字段，account 为空时使用}
+                password: {type: string}
+                captcha_id: {type: string, description: 失败达阈值后必填}
+                captcha_code: {type: string, description: 失败达阈值后必填}
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuthEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [认证]
+      summary: 刷新令牌
+      description: 刷新令牌会轮换，旧令牌立即失效；过期返回 `40101`。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuthEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/auth/check-username:
+    get:
+      tags: [认证]
+      summary: 检查用户名可用性
+      security: []
+      parameters:
+        - name: u
+          in: query
+          required: false
+          description: 待检查用户名，也接受 username
+          schema: {type: string}
+        - name: username
+          in: query
+          required: false
+          schema: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CheckEnvelope'}
+
+  /api/v1/auth/check-email:
+    get:
+      tags: [认证]
+      summary: 检查邮箱可用性
+      security: []
+      parameters:
+        - name: e
+          in: query
+          required: false
+          description: 待检查邮箱，也接受 email
+          schema: {type: string}
+        - name: email
+          in: query
+          required: false
+          schema: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CheckEnvelope'}
+
+  /api/v1/auth/verify-email:
+    post:
+      tags: [认证]
+      summary: 验证邮箱（JSON）
+      description: 验证成功后用户 `email_verified=true` 且状态置为正常；令牌无效或过期返回 `40001`。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+    get:
+      tags: [认证]
+      summary: 验证邮箱（查询参数）
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/auth/resend-verify:
+    post:
+      tags: [认证]
+      summary: 重发验证邮件
+      description: 无论邮箱是否存在均返回成功，避免暴露账号信息。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: {type: string, format: email}
+                captcha_id: {type: string, description: 验证码启用时必填}
+                captcha_code: {type: string, description: 验证码启用时必填}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/auth/forgot-password:
+    post:
+      tags: [认证]
+      summary: 忘记密码
+      description: SMTP 未启用时返回 `40300 邮件服务未启用，请联系管理员`。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: {type: string, format: email}
+                captcha_id: {type: string, description: 验证码启用时必填}
+                captcha_code: {type: string, description: 验证码启用时必填}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /api/v1/auth/reset-password:
+    post:
+      tags: [认证]
+      summary: 重置密码
+      description: 令牌无效或过期返回 `40001`；新密码需满足密码强度策略。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: {type: string}
+                password: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/auth/logout:
+    post:
+      tags: [认证]
+      summary: 登出
+      description: 注销当前访问令牌；传入 refresh_token 时一并注销该刷新令牌。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/s/{slug}:
+    get:
+      tags: [分享]
+      summary: 访问分享内容
+      description: 公开接口；分享不存在/过期/次数用尽返回 `40400`，密码错误返回 `40300`。
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: {type: string}
+        - name: password
+          in: query
+          required: false
+          description: 分享密码，也接受表单字段 password
+          schema: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ShareAccessEnvelope'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/user/profile:
+    get:
+      tags: [用户]
+      summary: 获取当前用户资料
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    put:
+      tags: [用户]
+      summary: 修改当前用户资料
+      description: |
+        字段均可选，仅传需要修改的字段。
+        `referer_stat_enabled` 在配置禁止用户关闭时返回 `40300`；
+        `storage_config_id` 为 `0` 表示解绑，未开放自定义存储时返回 `40300`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nickname: {type: string, description: 昵称，1-32 字符}
+                avatar_url: {type: string, maxLength: 500}
+                default_visibility: {type: string, enum: [public, private]}
+                referer_stat_enabled: {type: boolean}
+                storage_config_id: {type: integer, format: int64, description: 绑定本人存储策略，0 表示解绑}
+      responses:
+        '200':
+          description: 成功，返回更新后的用户信息
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /api/v1/user/password:
+    put:
+      tags: [用户]
+      summary: 修改密码
+      description: 需校验原密码与验证码；新密码需满足强度策略且不能与原密码相同。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_password, new_password]
+              properties:
+                old_password: {type: string}
+                new_password: {type: string}
+                captcha_id: {type: string, description: 验证码启用时必填}
+                captcha_code: {type: string, description: 验证码启用时必填}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/user/stats:
+    get:
+      tags: [用户]
+      summary: 获取用户用量统计
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserStatsEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/upload:
+    post:
+      tags: [上传]
+      summary: 上传单张图片
+      description: |
+        请求体上限为「单文件上限 + 1MB」，超过返回 `41300`；扩展名不在允许列表返回 `40001`。
+        用户级秒传命中时 `dedup=true` 直接返回；`upload.dedup_scope=global` 时复用物理文件并累加引用计数。
+        达到每日上传上限返回 `41302`，容量不足返回 `41301`。按用户限流（默认 60 次/分钟）。
+      x-required-scope: upload
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: {type: string, format: binary, description: 图片文件}
+                album_id: {type: string, description: 归属相册 ID}
+                tags: {type: string, description: '逗号分隔标签，如 旅行,风景'}
+                is_public: {type: string, description: 是否公开，缺省取用户/系统默认可见性}
+                storage_id: {type: string, description: 指定存储策略 ID}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /api/v1/upload/check:
+    post:
+      tags: [上传]
+      summary: 秒传检测
+      x-required-scope: upload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hash]
+              properties:
+                hash: {type: string, description: 文件 SHA-256，64 位十六进制}
+                size: {type: integer, format: int64, description: 文件大小（字节）}
+                name: {type: string}
+                ext: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadCheckEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/upload/url:
+    post:
+      tags: [上传]
+      summary: 远程 URL 拉取上传
+      description: |
+        仅支持 http/https，禁止内网地址与重定向；下载超时 30 秒，
+        响应体超过单文件上限返回 `41300`。
+      x-required-scope: upload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: {type: string, format: uri}
+                album_id: {type: integer, format: int64, nullable: true}
+                tags: {type: string, description: 逗号分隔标签}
+                is_public: {type: boolean, nullable: true}
+                storage_id: {type: integer, format: int64}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+
+  /api/v1/upload/chunk/init:
+    post:
+      tags: [上传]
+      summary: 初始化分片上传
+      description: 分片会话保存在服务进程内，有效期 24 小时；服务重启后会话失效。
+      x-required-scope: upload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, size, hash, chunks]
+              properties:
+                name: {type: string, description: 文件名}
+                size: {type: integer, format: int64, description: 文件总大小，需不超过单文件上限}
+                hash: {type: string, description: 文件 SHA-256}
+                chunks: {type: integer, description: 分片数量，1-upload.max_chunk_count（默认 1000）}
+                album_id: {type: integer, format: int64, nullable: true}
+                tags: {type: string}
+                is_public: {type: boolean, nullable: true}
+                storage_id: {type: integer, format: int64}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ChunkInitEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+
+  /api/v1/upload/chunk/{id}:
+    post:
+      tags: [上传]
+      summary: 上传单个分片
+      description: 除最后一片外单分片不得超过 `chunk_size`；空分片返回 `40001`。
+      x-required-scope: upload
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 分片会话 ID
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: {type: string, format: binary}
+                index: {type: string, description: 分片序号，从 0 开始；也接受 part、part_number、partNumber}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ResponseBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          index: {type: integer, example: 0}
+                          size: {type: integer, format: int64, example: 5242880}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/upload/chunk/{id}/complete:
+    post:
+      tags: [上传]
+      summary: 完成分片上传
+      description: 校验所有分片齐全、合并后大小与哈希与初始化一致；会话不存在或过期返回 `40400`。
+      x-required-scope: upload
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 分片会话 ID
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hash: {type: string, description: 文件 SHA-256，仅作兼容保留，服务端以会话记录为准}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/images:
+    get:
+      tags: [图片]
+      summary: 图片列表
+      description: |
+        排序规则：正常图片按 `created_at DESC, id DESC`；回收站按 `deleted_at DESC, id DESC`。
+        默认每页 24 条，最大 200；游标模式下只返回 `id < cursor` 的记录且不统计 total。
+      x-required-scope: read
+      parameters:
+        - name: keyword
+          in: query
+          schema: {type: string}
+          description: 模糊匹配显示名、原始文件名、哈希
+        - name: album_id
+          in: query
+          schema: {type: integer, format: int64}
+        - name: tag_id
+          in: query
+          schema: {type: integer, format: int64}
+        - name: ext
+          in: query
+          schema: {type: string}
+          description: 扩展名，如 png（自动去点、转小写）
+        - name: referred
+          in: query
+          schema: {type: boolean}
+          description: 仅返回存在引用记录的图片
+        - name: is_public
+          in: query
+          schema: {type: boolean}
+        - name: trash
+          in: query
+          schema: {type: boolean}
+        - name: with_tags
+          in: query
+          schema: {type: string, enum: ['1', 'true']}
+          description: 为每张图片附带标签列表
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Page'
+        - name: size
+          in: query
+          schema: {type: integer, default: 24, maximum: 200}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ImagePageEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/images/trash:
+    get:
+      tags: [图片]
+      summary: 回收站列表
+      x-required-scope: read
+      parameters:
+        - name: keyword
+          in: query
+          schema: {type: string}
+        - $ref: '#/components/parameters/Cursor'
+        - name: page
+          in: query
+          schema: {type: integer, default: 1}
+        - name: size
+          in: query
+          schema: {type: integer, default: 24, maximum: 200}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ImagePageEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    delete:
+      tags: [图片]
+      summary: 清空回收站
+      x-required-scope: read
+      responses:
+        '200':
+          description: 成功，返回清空数量
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BatchEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/images/batch:
+    post:
+      tags: [图片]
+      summary: 批量操作图片
+      description: |
+        `action` 取值：`delete` 移入回收站、`restore` 还原、`move` 移动到 `album_id`、
+        `public` 设为公开、`private` 设为私有。
+      x-required-scope: read
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids, action]
+              properties:
+                ids:
+                  type: array
+                  items: {type: integer, format: int64}
+                action:
+                  type: string
+                  enum: [delete, restore, move, public, private]
+                album_id: {type: integer, format: int64, nullable: true, description: action=move 时必填}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BatchEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/images/{id}:
+    get:
+      tags: [图片]
+      summary: 图片详情
+      x-required-scope: read
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ImageEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      tags: [图片]
+      summary: 修改图片信息
+      x-required-scope: read
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name: {type: string, nullable: true}
+                album_id: {type: integer, format: int64, nullable: true}
+                clear_album: {type: boolean, description: 为 true 时移出相册}
+                tags:
+                  type: array
+                  items: {type: string}
+                  description: 传值时整体替换标签集合
+                is_public: {type: boolean, nullable: true}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ImageEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [图片]
+      summary: 删除图片（移入回收站）
+      x-required-scope: read
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/images/{id}/permanent:
+    delete:
+      tags: [图片]
+      summary: 永久删除图片
+      x-required-scope: read
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/images/{id}/restore:
+    post:
+      tags: [图片]
+      summary: 从回收站还原
+      x-required-scope: read
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/images/{id}/referers:
+    get:
+      tags: [图片]
+      summary: 图片引用来源列表
+      x-required-scope: read
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+        - name: page
+          in: query
+          schema: {type: integer, default: 1}
+        - name: size
+          in: query
+          schema: {type: integer, default: 20, maximum: 200}
+        - name: order
+          in: query
+          schema: {type: string, enum: [hits, time], default: hits}
+          description: hits 按命中次数，time 按最近访问时间
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RefererPageEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/images/{id}/referers/summary:
+    get:
+      tags: [图片]
+      summary: 图片引用汇总
+      x-required-scope: read
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RefererSummaryEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/images/{id}/referers/{rid}:
+    delete:
+      tags: [图片]
+      summary: 删除单条引用记录
+      x-required-scope: read
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+        - name: rid
+          in: path
+          required: true
+          description: 引用记录 ID
+          schema: {type: integer, format: int64}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/albums:
+    get:
+      tags: [相册]
+      summary: 相册列表
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AlbumListEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [相册]
+      summary: 创建相册
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+                description: {type: string}
+                is_public: {type: boolean, nullable: true}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AlbumEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/albums/{id}:
+    get:
+      tags: [相册]
+      summary: 相册详情
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AlbumEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      tags: [相册]
+      summary: 更新相册
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, nullable: true}
+                description: {type: string, nullable: true}
+                is_public: {type: boolean, nullable: true}
+                cover_image_id: {type: integer, format: int64, nullable: true}
+                sort_order: {type: integer, nullable: true}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AlbumEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [相册]
+      summary: 删除相册
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/tags:
+    get:
+      tags: [标签]
+      summary: 标签列表
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TagListEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [标签]
+      summary: 创建标签
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+                color: {type: string, description: "颜色值，如 #409eff"}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TagEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/tags/{id}:
+    put:
+      tags: [标签]
+      summary: 更新标签
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, nullable: true}
+                color: {type: string, nullable: true}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TagEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [标签]
+      summary: 删除标签
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/tokens:
+    get:
+      tags: [令牌]
+      summary: API 令牌列表
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenListEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [令牌]
+      summary: 创建 API 令牌
+      description: |
+        明文令牌仅在创建时返回一次。`scopes` 可选值：`upload`、`read`、`write`、`delete`、`stats`、`*`；
+        未传时授予全部权限。`expires_in_days` 最大 3650，为 0 表示永久。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+                scopes:
+                  type: array
+                  items: {type: string, enum: [upload, read, write, delete, stats, '*']}
+                expires_in_days: {type: integer, maximum: 3650}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenCreateEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/tokens/{id}:
+    delete:
+      tags: [令牌]
+      summary: 删除 API 令牌
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/tokens/{id}/status:
+    put:
+      tags: [令牌]
+      summary: 启用或禁用 API 令牌
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: {type: integer, enum: [0, 1], description: 0 禁用，1 启用}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/s3/credentials:
+    get:
+      tags: [令牌]
+      summary: S3 凭据列表
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/S3CredListEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [令牌]
+      summary: 创建 S3 凭据
+      description: SecretKey 仅在创建时返回一次。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/S3CredCreateEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/s3/credentials/{id}:
+    delete:
+      tags: [令牌]
+      summary: 删除 S3 凭据
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/shares:
+    get:
+      tags: [分享]
+      summary: 我的分享列表
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ShareListEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [分享]
+      summary: 创建分享
+      description: |
+        `password` 长度 4-32；`expires_in_hours` 不超过 8760；
+        达到用户组分享上限返回 `41302`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_type, target_id]
+              properties:
+                target_type: {type: string, enum: [image, album]}
+                target_id: {type: integer, format: int64}
+                password: {type: string, minLength: 4, maxLength: 32}
+                expires_in_hours: {type: integer, maximum: 8760}
+                max_views: {type: integer, description: 最大访问次数，0 不限}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ShareEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/shares/{id}:
+    delete:
+      tags: [分享]
+      summary: 删除分享
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/storages:
+    get:
+      tags: [存储]
+      summary: 我的存储策略列表
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StorageListEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [存储]
+      summary: 创建存储策略
+      description: 响应不返回密钥明文，仅以 `has_secret` 标识。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StorageCreateReq'}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StorageEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /api/v1/storages/{id}:
+    put:
+      tags: [存储]
+      summary: 更新存储策略
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StorageUpdateReq'}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StorageEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [存储]
+      summary: 删除存储策略
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/storages/{id}/test:
+    post:
+      tags: [存储]
+      summary: 测试存储策略连通性
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StorageTestEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/stats/referers/top:
+    get:
+      tags: [统计]
+      summary: TOP 引用域名
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, default: 10}
+        - name: days
+          in: query
+          schema: {type: integer, default: 30}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HostStatListEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/stats/referers/trend:
+    get:
+      tags: [统计]
+      summary: 引用趋势
+      parameters:
+        - name: days
+          in: query
+          schema: {type: integer, default: 30}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DayStatListEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/admin/dashboard:
+    get:
+      tags: [管理端]
+      summary: 仪表盘
+      description: 需要 role=1。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DashboardEnvelope'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /api/v1/admin/users:
+    get:
+      tags: [管理端]
+      summary: 用户列表
+      parameters:
+        - name: keyword
+          in: query
+          schema: {type: string}
+          description: 匹配用户名/邮箱/昵称
+        - name: status
+          in: query
+          schema: {type: integer}
+        - name: role
+          in: query
+          schema: {type: integer}
+        - name: group_id
+          in: query
+          schema: {type: integer, format: int64}
+        - $ref: '#/components/parameters/Page'
+        - name: size
+          in: query
+          schema: {type: integer, default: 20, maximum: 200}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminUserPageEnvelope'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /api/v1/admin/users/{id}/status:
+    put:
+      tags: [管理端]
+      summary: 启用 / 禁用用户
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: {type: integer, enum: [0, 1, 2], description: 0 禁用，1 正常，2 待验证}
+                reason: {type: string, description: 操作原因，写入审计日志}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/admin/users/{id}/group:
+    put:
+      tags: [管理端]
+      summary: 调整用户组与配额
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [group_id]
+              properties:
+                group_id: {type: integer, format: int64}
+                quota_bytes: {type: integer, format: int64, nullable: true, description: 覆盖总容量}
+                max_file_size: {type: integer, format: int64, nullable: true, description: 覆盖单文件上限}
+                daily_limit: {type: integer, nullable: true, description: 覆盖每日上传上限}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/admin/users/{id}/password:
+    put:
+      tags: [管理端]
+      summary: 重置用户密码
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_password]
+              properties:
+                new_password: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/admin/groups:
+    get:
+      tags: [管理端]
+      summary: 用户组列表
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupListEnvelope'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      tags: [管理端]
+      summary: 创建用户组
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GroupCreateReq'}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/admin/groups/{id}:
+    put:
+      tags: [管理端]
+      summary: 更新用户组
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GroupUpdateReq'}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [管理端]
+      summary: 删除用户组
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/admin/settings:
+    get:
+      tags: [管理端]
+      summary: 系统设置列表
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SettingListEnvelope'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    put:
+      tags: [管理端]
+      summary: 批量更新系统设置
+      description: 未知键返回 40001；密文项回传掩码值时跳过更新。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [settings]
+              properties:
+                settings:
+                  type: object
+                  additionalProperties: {type: string}
+                  description: 配置键到配置值的映射
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/admin/logs:
+    get:
+      tags: [管理端]
+      summary: 操作日志
+      parameters:
+        - name: user_id
+          in: query
+          schema: {type: integer, format: int64}
+        - name: action
+          in: query
+          schema: {type: string}
+        - $ref: '#/components/parameters/Page'
+        - name: size
+          in: query
+          schema: {type: integer, default: 20, maximum: 200}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LogPageEnvelope'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /api/v1/admin/email-logs:
+    get:
+      tags: [管理端]
+      summary: 邮件日志
+      parameters:
+        - name: user_id
+          in: query
+          schema: {type: integer, format: int64}
+        - name: status
+          in: query
+          schema: {type: integer, enum: [0, 1, 2]}
+        - $ref: '#/components/parameters/Page'
+        - name: size
+          in: query
+          schema: {type: integer, default: 20, maximum: 200}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmailLogPageEnvelope'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /api/v1/admin/invites:
+    get:
+      tags: [管理端]
+      summary: 邀请码列表
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - name: size
+          in: query
+          schema: {type: integer, default: 20, maximum: 200}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InvitePageEnvelope'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      tags: [管理端]
+      summary: 批量创建邀请码
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                max_uses: {type: integer, description: 每个邀请码最大使用次数}
+                group_id: {type: integer, format: int64, description: 注册后归属用户组，0 使用默认组}
+                expires_in_hours: {type: integer}
+                count: {type: integer, description: 生成数量}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InviteListEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/admin/invites/{id}:
+    delete:
+      tags: [管理端]
+      summary: 删除邀请码
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/admin/storages:
+    get:
+      tags: [管理端]
+      summary: 全部存储策略
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StorageListEnvelope'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      tags: [管理端]
+      summary: 创建系统存储策略
+      description: 创建的策略属于系统级（user_id 为空）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StorageCreateReq'}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StorageEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/admin/storages/{id}:
+    put:
+      tags: [管理端]
+      summary: 更新系统存储策略
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StorageUpdateReq'}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StorageEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [管理端]
+      summary: 删除系统存储策略
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResponseBase'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/admin/storages/{id}/test:
+    post:
+      tags: [管理端]
+      summary: 测试系统存储策略连通性
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StorageTestEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /i/{hash}:
+    get:
+      tags: [图片直出]
+      summary: 原图与动态处理
+      description: |
+        直接输出图片二进制，按 IP 限流（默认 600 次/分钟）。
+
+        任一动态参数存在时走处理链路：默认不放大；源图解码像素超过 1 亿或源文件超过 256MB 返回 41300；
+        SVG 不支持动态处理（40001）；处理结果按「源图 + 参数」磁盘缓存。
+
+        私有图片需要签名：`sign = hex(HMAC-SHA256(secret, hash + ":" + exp))`，
+        `secret` 取 `security.url_sign_secret`，为空时回退 `security.jwt_secret`。
+        公开图片无需签名；私有图片非本人访问且签名缺失/过期/不匹配返回 40300。
+
+        防盗链开启时校验 Referer：空 Referer 依 `allow_empty_referer` 决定；同站域名与白名单放行；
+        拒绝时按 `block_action` 返回 403（forbidden）或 302 跳转站点首页（默认 redirect）。
+      security: []
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          description: 图片 SHA-256，可带扩展名（如 <hash>.png）
+          schema: {type: string}
+        - name: w
+          in: query
+          schema: {type: integer, maximum: 4096}
+          description: 目标宽度，超过 max_width 时截断
+        - name: h
+          in: query
+          schema: {type: integer, maximum: 4096}
+          description: 目标高度，超过 max_height 时截断
+        - name: fit
+          in: query
+          schema: {type: string, enum: [cover, contain, fill, inside, outside], default: inside}
+        - name: q
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 85}
+          description: 输出质量
+        - name: format
+          in: query
+          schema: {type: string, enum: [webp, jpeg, png, avif]}
+          description: 输出格式，需在 allowed_formats 内
+        - name: blur
+          in: query
+          schema: {type: number, minimum: 0, maximum: 100}
+          description: 模糊程度，内部换算为 sigma（0.3-20）
+        - name: gray
+          in: query
+          schema: {type: string, enum: ['1', 'true', 'yes']}
+          description: 输出灰度图
+        - name: uid
+          in: query
+          schema: {type: integer, format: int64}
+          description: 图片所属用户 ID，与归属一致时视为本人访问
+        - name: exp
+          in: query
+          schema: {type: integer, format: int64}
+          description: 签名过期时间戳（Unix 秒）
+        - name: sign
+          in: query
+          schema: {type: string}
+          description: 签名值
+      responses:
+        '200':
+          description: 图片二进制
+          headers:
+            ETag:
+              description: 原图为 "<hash>"，处理图为 "<hash>|<参数键>"
+              schema: {type: string}
+            Cache-Control:
+              description: 公开原图 public, max-age=31536000, immutable；私有原图 private, max-age=3600；处理图 public, max-age=604800
+              schema: {type: string}
+            X-Content-Type-Options:
+              schema: {type: string, example: nosniff}
+          content:
+            image/*:
+              schema: {type: string, format: binary}
+        '302':
+          description: 防盗链命中且 block_action 为 redirect
+        '304':
+          description: If-None-Match 命中
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+
+  /t/{hash}/{size}:
+    get:
+      tags: [图片直出]
+      summary: 预设缩略图
+      description: |
+        缩略图未启用返回 40400，未知尺寸返回 40001；
+        输出格式取 `image.thumbnail.format`（默认 webp）。
+      security: []
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          description: 图片 SHA-256，可带扩展名
+          schema: {type: string}
+        - name: size
+          in: path
+          required: true
+          description: 预设尺寸名（small/medium/large）或像素宽度（如 800），可带扩展名
+          schema: {type: string}
+      responses:
+        '200':
+          description: 缩略图二进制
+          headers:
+            ETag:
+              schema: {type: string}
+            Cache-Control:
+              schema: {type: string, example: 'public, max-age=604800'}
+          content:
+            image/*:
+              schema: {type: string, format: binary}
+        '304':
+          description: If-None-Match 命中
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /s3:
+    get:
+      tags: [S3 网关]
+      summary: ListBuckets
+      description: |
+        S3 兼容网关，前缀由 `s3_gateway.path_prefix` 决定（默认 /s3），关闭时返回 503 ServiceUnavailable。
+        使用 AWS Signature V4 鉴权（Authorization 头或 X-Amz-Signature 查询参数），凭据在「API 令牌 → S3 凭据」创建，
+        必须使用 Path Style 访问。Bucket 固定返回 pichub。
+      security: []
+      responses:
+        '200':
+          description: Bucket 列表 XML
+          content:
+            application/xml:
+              schema: {type: string}
+        '503':
+          description: 网关已关闭
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+
+  /s3/{bucket}:
+    head:
+      tags: [S3 网关]
+      summary: HeadBucket
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/S3Bucket'
+      responses:
+        '200':
+          description: 存在，响应头包含 x-amz-bucket-region
+          headers:
+            x-amz-bucket-region:
+              schema: {type: string}
+        '403':
+          description: 签名无效或无权限
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+    get:
+      tags: [S3 网关]
+      summary: GetBucketLocation / ListObjectsV2
+      description: 带 `location` 查询参数时返回 Bucket Region，否则执行 ListObjectsV2。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/S3Bucket'
+        - name: location
+          in: query
+          schema: {type: string}
+        - name: prefix
+          in: query
+          schema: {type: string}
+        - name: delimiter
+          in: query
+          schema: {type: string}
+        - name: max-keys
+          in: query
+          schema: {type: integer, maximum: 1000}
+        - name: continuation-token
+          in: query
+          schema: {type: string}
+      responses:
+        '200':
+          description: XML 结果
+          content:
+            application/xml:
+              schema: {type: string}
+        '403':
+          description: 签名无效或无权限
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+
+  /s3/{bucket}/{key}:
+    get:
+      tags: [S3 网关]
+      summary: GetObject
+      description: |
+        支持 Range 断点续传。匿名请求（无 Authorization 且无 X-Amz-Signature）仅允许访问公开图片，
+        便于 PicGo 自定义域名直链；对象直链为 `<site_url>/s3/pichub/<key>`。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/S3Bucket'
+        - $ref: '#/components/parameters/S3Key'
+        - name: Range
+          in: header
+          schema: {type: string}
+      responses:
+        '200':
+          description: 对象内容
+          headers:
+            ETag:
+              schema: {type: string}
+            Content-Type:
+              schema: {type: string}
+            Content-Length:
+              schema: {type: integer}
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '206':
+          description: Range 命中
+        '403':
+          description: 无权限或私有对象
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+        '404':
+          description: 对象不存在
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+    head:
+      tags: [S3 网关]
+      summary: HeadObject
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/S3Bucket'
+        - $ref: '#/components/parameters/S3Key'
+      responses:
+        '200':
+          description: 对象元信息
+          headers:
+            Content-Length:
+              schema: {type: integer}
+            ETag:
+              schema: {type: string}
+            Content-Type:
+              schema: {type: string}
+        '404':
+          description: 对象不存在
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+    put:
+      tags: [S3 网关]
+      summary: PutObject / UploadPart
+      description: |
+        带 `uploadId` 与 `partNumber` 时执行 UploadPart（partNumber 取值 1-10000），否则执行 PutObject。
+        会校验请求体 `x-amz-content-sha256`（若提供），并按用户单文件上限限制大小；
+        写入复用图片表，内容相同的 Key 做记录迁移，相同内容重复上传视为秒传。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/S3Bucket'
+        - $ref: '#/components/parameters/S3Key'
+        - name: uploadId
+          in: query
+          schema: {type: string}
+        - name: partNumber
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 10000}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '200':
+          description: 成功，响应头 ETag
+          headers:
+            ETag:
+              schema: {type: string}
+        '400':
+          description: 参数错误或哈希不一致
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+        '403':
+          description: 配额不足或无权限
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+        '413':
+          description: 对象大小超限
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+        '503':
+          description: 每日上传数超限
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+    post:
+      tags: [S3 网关]
+      summary: CreateMultipartUpload / CompleteMultipartUpload
+      description: 带 `uploads` 查询参数时创建分片上传（需 allow_multipart=true），带 `uploadId` 时完成合并。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/S3Bucket'
+        - $ref: '#/components/parameters/S3Key'
+        - name: uploads
+          in: query
+          schema: {type: string}
+        - name: uploadId
+          in: query
+          schema: {type: string}
+      requestBody:
+        required: false
+        content:
+          application/xml:
+            schema:
+              type: object
+              properties:
+                CompleteMultipartUpload:
+                  type: object
+                  description: 标准 CompleteMultipartUpload 文档
+      responses:
+        '200':
+          description: XML 结果（创建返回 UploadId，完成返回 Location/ETag）
+          content:
+            application/xml:
+              schema: {type: string}
+        '400':
+          description: XML 不合法或参数错误
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+        '404':
+          description: 分片会话不存在
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+        '501':
+          description: 未开启分片上传
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+    delete:
+      tags: [S3 网关]
+      summary: DeleteObject / AbortMultipartUpload
+      description: |
+        不带 `uploadId` 时删除对象（等于把对应图片移入回收站），对象不存在同样返回 204；
+        带 `uploadId` 时中止分片上传。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/S3Bucket'
+        - $ref: '#/components/parameters/S3Key'
+        - name: uploadId
+          in: query
+          schema: {type: string}
+      responses:
+        '204':
+          description: 成功
+        '403':
+          description: 无权限
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+        '404':
+          description: 分片会话不存在
+          content:
+            application/xml:
+              schema: {$ref: '#/components/schemas/S3Error'}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT 访问令牌（登录/注册/刷新返回）或 API 令牌（以 ph_ 开头）。
+        访问令牌失效返回 40101（过期）或 401（注销/用户禁用）。
+
+  parameters:
+    PathID:
+      name: id
+      in: path
+      required: true
+      description: 资源 ID
+      schema: {type: integer, format: int64, minimum: 1}
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: 游标模式，只返回 id < cursor 的记录，此时忽略 page 且不统计 total
+      schema: {type: integer, format: int64}
+    Page:
+      name: page
+      in: query
+      required: false
+      description: 页码，从 1 开始
+      schema: {type: integer, default: 1, minimum: 1}
+    S3Bucket:
+      name: bucket
+      in: path
+      required: true
+      description: 逻辑 Bucket 名称，固定为 pichub；3-63 位，仅小写字母、数字、- 与 .，首尾不能为符号
+      schema: {type: string}
+    S3Key:
+      name: key
+      in: path
+      required: true
+      description: 对象 Key
+      schema: {type: string}
+
+  responses:
+    BadRequest:
+      description: 参数错误（40001）或验证码/邀请码等业务校验失败
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Unauthorized:
+      description: 未登录、凭据无效（40100）或令牌过期（40101）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Forbidden:
+      description: 无权限（40300）、scope 不足、邮箱未验证（40301 / 40302）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    NotFound:
+      description: 资源不存在或无权访问（40400）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Conflict:
+      description: 资源冲突（40010 用户名已占用 / 40011 邮箱已注册）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    PayloadTooLarge:
+      description: 文件超限（41300）、容量配额超限（41301）或每日上传数超限（41302）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    RateLimited:
+      description: 触发限流或登录失败锁定（42900），响应头含 Retry-After
+      headers:
+        Retry-After:
+          description: 建议重试等待秒数
+          schema: {type: integer}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Internal:
+      description: 服务端异常（50000）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  schemas:
+    ResponseBase:
+      type: object
+      description: 统一响应结构，data 无内容时省略
+      required: [code, message]
+      properties:
+        code: {type: integer, description: 业务错误码，0 表示成功, example: 0}
+        message: {type: string, description: 提示信息, example: ok}
+
+    ErrorEnvelope:
+      type: object
+      description: 统一错误响应
+      required: [code, message]
+      properties:
+        code: {type: integer, example: 40100}
+        message: {type: string, example: 未登录}
+        data:
+          type: object
+          description: 附加数据，限流时为当前窗口计数
+          additionalProperties: true
+          example: {count: 11}
+
+    User:
+      type: object
+      description: 用户信息（UserResp）
+      properties:
+        id: {type: integer, format: int64}
+        username: {type: string}
+        email: {type: string}
+        nickname: {type: string}
+        avatar_url: {type: string}
+        role: {type: integer, description: 0 普通用户，1 管理员}
+        status: {type: integer, description: 0 禁用，1 正常，2 待邮箱验证}
+        email_verified: {type: boolean}
+        group_id: {type: integer, format: int64}
+        quota_bytes: {type: integer, format: int64}
+        used_bytes: {type: integer, format: int64}
+        max_file_size: {type: integer, format: int64}
+        daily_limit: {type: integer, description: 每日上传上限，0 表示不限}
+        default_visibility: {type: string, enum: [public, private]}
+        storage_config_id: {type: integer, format: int64, nullable: true, description: 绑定的存储策略，null 表示未绑定}
+        referer_stat_enabled: {type: boolean}
+        last_login_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+
+    AdminUser:
+      type: object
+      description: 管理端用户视图（AdminUserResp），在 User 基础上增加 IP 字段，不含 default_visibility 与 storage_config_id
+      properties:
+        id: {type: integer, format: int64}
+        username: {type: string}
+        email: {type: string}
+        nickname: {type: string}
+        avatar_url: {type: string}
+        role: {type: integer}
+        status: {type: integer}
+        email_verified: {type: boolean}
+        group_id: {type: integer, format: int64}
+        quota_bytes: {type: integer, format: int64}
+        used_bytes: {type: integer, format: int64}
+        max_file_size: {type: integer, format: int64}
+        daily_limit: {type: integer}
+        referer_stat_enabled: {type: boolean}
+        register_ip: {type: string}
+        last_login_ip: {type: string}
+        last_login_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+
+    Auth:
+      type: object
+      description: 登录/注册/刷新响应（AuthResp）
+      properties:
+        access_token: {type: string, description: JWT 访问令牌}
+        refresh_token: {type: string, description: 刷新令牌，每次刷新轮换}
+        expires_in: {type: integer, format: int64, description: 访问令牌有效期（秒）}
+        user: {$ref: '#/components/schemas/User'}
+
+    Captcha:
+      type: object
+      description: 验证码响应（CaptchaResp）
+      properties:
+        captcha_id: {type: string}
+        image_base64: {type: string, description: 验证码图片 Base64}
+        expires_in: {type: integer, description: 有效期（秒），默认 300}
+
+    CheckResult:
+      type: object
+      description: 可用性检查结果（CheckResp）
+      properties:
+        available: {type: boolean}
+        message: {type: string}
+
+    UserStats:
+      type: object
+      description: 用户用量统计（UserStatsResp）
+      properties:
+        image_count: {type: integer, format: int64, description: 正常图片数量}
+        album_count: {type: integer, format: int64}
+        share_count: {type: integer, format: int64}
+        trash_count: {type: integer, format: int64, description: 回收站图片数量}
+        storage_bytes: {type: integer, format: int64, description: 正常图片占用字节数}
+        used_bytes: {type: integer, format: int64}
+        quota_bytes: {type: integer, format: int64}
+        daily_limit: {type: integer}
+        today_uploads: {type: integer}
+        referer_hits: {type: integer, format: int64}
+        top_hosts:
+          type: array
+          items: {$ref: '#/components/schemas/HostStat'}
+        trend:
+          type: array
+          items: {$ref: '#/components/schemas/DayStat'}
+
+    SiteConfig:
+      type: object
+      description: 站点公开配置（SiteConfigResp）
+      properties:
+        name: {type: string}
+        description: {type: string}
+        logo_url: {type: string}
+        icp: {type: string}
+        site_url: {type: string}
+        register_enabled: {type: boolean}
+        register_mode: {type: string, enum: [open, invite]}
+        email_verify_level: {type: string, enum: [off, soft, force], description: 未配置 SMTP 时 force 自动降级为 soft}
+        captcha_enabled: {type: boolean}
+        default_visibility: {type: string, enum: [public, private]}
+        max_file_size: {type: integer, format: int64}
+        allowed_extensions:
+          type: array
+          items: {type: string}
+        thumbnail_enabled: {type: boolean}
+        thumbnail_sizes:
+          type: array
+          items: {type: string}
+        s3_gateway_enabled: {type: boolean}
+        s3_gateway_prefix: {type: string, example: /s3}
+
+    Upload:
+      type: object
+      description: 上传成功响应（UploadResp，PicGo 兼容）
+      properties:
+        id: {type: integer, format: int64}
+        url: {type: string}
+        thumb_url: {type: string, description: 未启用缩略图时为空}
+        markdown: {type: string}
+        html: {type: string}
+        bbcode: {type: string}
+        size: {type: integer, format: int64}
+        width: {type: integer, description: 无法解析时为 0}
+        height: {type: integer, description: 无法解析时为 0}
+        hash: {type: string, description: SHA-256 十六进制摘要}
+        dedup: {type: boolean, description: 是否命中秒传}
+
+    UploadCheck:
+      type: object
+      description: 秒传检测结果（UploadCheckResp）
+      properties:
+        exists: {type: boolean}
+        image: {$ref: '#/components/schemas/Upload'}
+
+    ChunkInit:
+      type: object
+      description: 分片上传初始化结果（ChunkInitResp）
+      properties:
+        upload_id: {type: string}
+        uploaded:
+          type: array
+          items: {type: integer}
+          description: 已上传分片序号，新建时为空数组
+        chunk_size: {type: integer, format: int64, description: 建议分片大小（字节），默认 5MB}
+
+    Image:
+      type: object
+      description: 图片信息（ImageResp）
+      properties:
+        id: {type: integer, format: int64}
+        hash: {type: string, description: SHA-256}
+        name: {type: string, description: 显示名称}
+        origin_name: {type: string, description: 原始文件名}
+        ext: {type: string, description: 扩展名，不含点}
+        mime: {type: string}
+        size: {type: integer, format: int64}
+        width: {type: integer}
+        height: {type: integer}
+        url: {type: string, description: 访问地址，本地存储由站点地址派生}
+        thumb_url: {type: string, description: 未启用缩略图时为空}
+        is_public: {type: boolean}
+        album_id: {type: integer, format: int64, nullable: true}
+        tags:
+          type: array
+          items: {$ref: '#/components/schemas/Tag'}
+          description: 仅详情或 with_tags 时返回
+        ref_count: {type: integer, description: 物理文件被引用次数}
+        status: {type: integer, description: 0 回收站，1 正常}
+        created_at: {type: string, format: date-time}
+        deleted_at: {type: string, format: date-time, nullable: true, description: 移入回收站时间}
+
+    Album:
+      type: object
+      description: 相册信息（AlbumResp）
+      properties:
+        id: {type: integer, format: int64}
+        name: {type: string}
+        description: {type: string}
+        cover_image_id: {type: integer, format: int64, nullable: true}
+        cover_url: {type: string, description: 预留字段，当前恒为空字符串}
+        is_public: {type: boolean}
+        sort_order: {type: integer}
+        image_count: {type: integer}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    Tag:
+      type: object
+      description: 标签信息（TagResp）
+      properties:
+        id: {type: integer, format: int64}
+        name: {type: string}
+        color: {type: string}
+        image_count: {type: integer}
+        created_at: {type: string, format: date-time}
+
+    Token:
+      type: object
+      description: API 令牌（TokenResp）
+      properties:
+        id: {type: integer, format: int64}
+        name: {type: string}
+        prefix: {type: string, description: 令牌前缀，用于辨识}
+        scopes:
+          type: array
+          items: {type: string}
+        expires_at: {type: string, format: date-time, nullable: true, description: null 表示永久}
+        last_used_at: {type: string, format: date-time, nullable: true}
+        call_count: {type: integer, format: int64}
+        status: {type: integer, description: 0 禁用，1 启用}
+        created_at: {type: string, format: date-time}
+
+    TokenCreate:
+      type: object
+      description: 创建令牌响应（TokenCreateResp），明文仅返回一次
+      properties:
+        token: {type: string}
+        info: {$ref: '#/components/schemas/Token'}
+
+    S3Cred:
+      type: object
+      description: S3 凭据（S3CredResp）
+      properties:
+        id: {type: integer, format: int64}
+        name: {type: string}
+        access_key: {type: string}
+        call_count: {type: integer, format: int64}
+        last_used_at: {type: string, format: date-time, nullable: true}
+        status: {type: integer}
+        created_at: {type: string, format: date-time}
+
+    S3CredCreate:
+      type: object
+      description: 创建 S3 凭据响应（S3CredCreateResp），SecretKey 仅返回一次
+      properties:
+        access_key: {type: string}
+        secret_key: {type: string}
+        info: {$ref: '#/components/schemas/S3Cred'}
+
+    Share:
+      type: object
+      description: 分享信息（ShareResp）
+      properties:
+        id: {type: integer, format: int64}
+        slug: {type: string, description: 短链接标识}
+        target_type: {type: string, enum: [image, album]}
+        target_id: {type: integer, format: int64}
+        has_password: {type: boolean}
+        expires_at: {type: string, format: date-time, nullable: true}
+        max_views: {type: integer, description: 0 不限}
+        views: {type: integer}
+        status: {type: integer, description: 0 失效，1 正常}
+        url: {type: string, description: 分享完整地址}
+        created_at: {type: string, format: date-time}
+
+    ShareAccess:
+      type: object
+      description: 分享内容（ShareAccessResp）
+      properties:
+        share: {$ref: '#/components/schemas/Share'}
+        album: {$ref: '#/components/schemas/Album'}
+        images:
+          type: array
+          items: {$ref: '#/components/schemas/Image'}
+
+    Storage:
+      type: object
+      description: 存储策略（StorageResp），不返回密钥明文
+      properties:
+        id: {type: integer, format: int64}
+        user_id: {type: integer, format: int64, nullable: true, description: null 表示系统级策略}
+        name: {type: string}
+        driver: {type: string, enum: [local, s3, oss, cos, webdav]}
+        domain: {type: string, description: 自定义访问域名}
+        path_prefix: {type: string}
+        is_default: {type: boolean}
+        status: {type: integer, description: 0 禁用，1 启用}
+        root_path: {type: string, description: 本地存储根目录}
+        path_template: {type: string, description: 对象 Key 模板}
+        endpoint: {type: string}
+        region: {type: string}
+        bucket: {type: string}
+        path_style: {type: boolean}
+        use_ssl: {type: boolean, nullable: true}
+        public_url: {type: string}
+        url: {type: string, description: WebDAV 地址}
+        has_secret: {type: boolean}
+        last_test_at: {type: string, format: date-time, nullable: true}
+        last_test_ok: {type: boolean, nullable: true}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    StorageTest:
+      type: object
+      description: 存储连通性测试结果（StorageTestResp）
+      properties:
+        ok: {type: boolean}
+        message: {type: string}
+
+    Referer:
+      type: object
+      description: 单条引用来源（RefererResp）
+      properties:
+        id: {type: integer, format: int64}
+        host: {type: string}
+        url: {type: string}
+        hits: {type: integer, format: int64}
+        first_seen_at: {type: string, format: date-time}
+        last_seen_at: {type: string, format: date-time}
+
+    RefererSummary:
+      type: object
+      description: 单图引用汇总（RefererSummaryResp）
+      properties:
+        total_hits: {type: integer, format: int64}
+        host_count: {type: integer, format: int64}
+
+    HostStat:
+      type: object
+      description: 域名汇总统计
+      properties:
+        host: {type: string, description: 来源域名}
+        hits: {type: integer, format: int64}
+        images: {type: integer, format: int64, description: 涉及图片数}
+
+    DayStat:
+      type: object
+      description: 按天统计
+      properties:
+        date: {type: string, description: 日期，格式 YYYY-MM-DD, example: '2026-10-24'}
+        hits: {type: integer, format: int64}
+
+    Dashboard:
+      type: object
+      description: 管理后台仪表盘（DashboardResp）
+      properties:
+        user_count: {type: integer, format: int64}
+        image_count: {type: integer, format: int64}
+        storage_bytes: {type: integer, format: int64}
+        today_uploads: {type: integer, format: int64}
+        referer_hits: {type: integer, format: int64}
+        album_count: {type: integer, format: int64}
+        share_count: {type: integer, format: int64}
+        trash_count: {type: integer, format: int64}
+        group_count: {type: integer, format: int64}
+        invite_count: {type: integer, format: int64}
+        queue_ready: {type: integer, format: int64, description: 待处理队列任务数}
+        queue_delayed: {type: integer, format: int64, description: 延迟队列任务数}
+        queue_dead: {type: integer, format: int64, description: 死信队列任务数}
+
+    Group:
+      type: object
+      description: 用户组（GroupResp）
+      properties:
+        id: {type: integer, format: int64}
+        name: {type: string}
+        description: {type: string}
+        quota_bytes: {type: integer, format: int64}
+        max_file_size: {type: integer, format: int64}
+        daily_limit: {type: integer}
+        max_albums: {type: integer}
+        max_tokens: {type: integer}
+        max_shares: {type: integer}
+        allow_register: {type: boolean}
+        allow_custom_storage: {type: boolean}
+        is_default: {type: boolean}
+        status: {type: integer}
+        user_count: {type: integer, format: int64}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    Setting:
+      type: object
+      description: 系统设置项（SettingResp）
+      properties:
+        key: {type: string}
+        value: {type: string, description: 密文项返回掩码值}
+        type: {type: string, description: 值类型，如 string / int / bool / json}
+        is_secret: {type: boolean}
+        description: {type: string}
+        updated_at: {type: string, format: date-time}
+
+    Log:
+      type: object
+      description: 操作日志（LogResp）
+      properties:
+        id: {type: integer, format: int64}
+        user_id: {type: integer, format: int64}
+        action: {type: string}
+        target_type: {type: string}
+        target_id: {type: integer, format: int64}
+        ip: {type: string}
+        user_agent: {type: string}
+        detail: {type: object, additionalProperties: true}
+        created_at: {type: string, format: date-time}
+
+    EmailLog:
+      type: object
+      description: 邮件日志（EmailLogResp）
+      properties:
+        id: {type: integer, format: int64}
+        user_id: {type: integer, format: int64}
+        to_email: {type: string}
+        subject: {type: string}
+        template: {type: string}
+        status: {type: integer, description: 0 待发送，1 成功，2 失败}
+        error: {type: string}
+        retry: {type: integer}
+        sent_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+
+    Invite:
+      type: object
+      description: 邀请码（InviteResp）
+      properties:
+        id: {type: integer, format: int64}
+        code: {type: string}
+        creator_id: {type: integer, format: int64}
+        max_uses: {type: integer}
+        used_count: {type: integer}
+        group_id: {type: integer, format: int64}
+        expires_at: {type: string, format: date-time, nullable: true}
+        status: {type: integer}
+        created_at: {type: string, format: date-time}
+
+    S3Error:
+      type: object
+      description: S3 网关错误体（XML）
+      properties:
+        Code: {type: string, example: NoSuchKey}
+        Message: {type: string, example: 对象不存在}
+        RequestId: {type: string}
+        HostId: {type: string, example: PicHub}
+
+    StorageCreateReq:
+      type: object
+      description: 创建存储策略请求（StorageCreateReq）
+      required: [name, driver]
+      properties:
+        name: {type: string}
+        driver: {type: string, enum: [local, s3, oss, cos, webdav]}
+        domain: {type: string, description: 自定义访问域名}
+        path_prefix: {type: string}
+        is_default: {type: boolean}
+        status: {type: integer, enum: [0, 1], description: 缺省启用}
+        root_path: {type: string, description: local 驱动根目录}
+        path_template: {type: string, example: '{prefix}/{yyyy}/{MM}/{dd}/{hash}.{ext}'}
+        endpoint: {type: string, description: s3 / oss / cos 端点}
+        region: {type: string}
+        bucket: {type: string}
+        path_style: {type: boolean}
+        use_ssl: {type: boolean, nullable: true}
+        public_url: {type: string}
+        url: {type: string, description: webdav 地址}
+        access_key: {type: string}
+        secret_key: {type: string, description: 仅写入，不返回}
+        username: {type: string, description: webdav 用户名}
+        password: {type: string, description: 仅写入，不返回}
+
+    StorageUpdateReq:
+      type: object
+      description: 更新存储策略请求（StorageUpdateReq），字段均可选，仅传需要修改的字段
+      properties:
+        name: {type: string}
+        domain: {type: string}
+        path_prefix: {type: string}
+        is_default: {type: boolean}
+        status: {type: integer}
+        root_path: {type: string}
+        path_template: {type: string}
+        endpoint: {type: string}
+        region: {type: string}
+        bucket: {type: string}
+        path_style: {type: boolean}
+        use_ssl: {type: boolean}
+        public_url: {type: string}
+        url: {type: string}
+        access_key: {type: string}
+        secret_key: {type: string}
+        username: {type: string}
+        password: {type: string}
+
+    GroupCreateReq:
+      type: object
+      description: 创建用户组请求（GroupCreateReq）
+      required: [name]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        quota_bytes: {type: integer, format: int64}
+        max_file_size: {type: integer, format: int64}
+        daily_limit: {type: integer}
+        max_albums: {type: integer}
+        max_tokens: {type: integer}
+        max_shares: {type: integer}
+        allow_register: {type: boolean, nullable: true}
+        allow_custom_storage: {type: boolean, nullable: true}
+        is_default: {type: boolean}
+        status: {type: integer, enum: [0, 1], nullable: true}
+
+    GroupUpdateReq:
+      type: object
+      description: 更新用户组请求（GroupUpdateReq），字段均可选
+      properties:
+        name: {type: string}
+        description: {type: string}
+        quota_bytes: {type: integer, format: int64}
+        max_file_size: {type: integer, format: int64}
+        daily_limit: {type: integer}
+        max_albums: {type: integer}
+        max_tokens: {type: integer}
+        max_shares: {type: integer}
+        allow_register: {type: boolean}
+        allow_custom_storage: {type: boolean}
+        is_default: {type: boolean}
+        status: {type: integer}
+
+    SiteEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/SiteConfig'}
+
+    CaptchaEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Captcha'}
+
+    AuthEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Auth'}
+
+    CheckEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/CheckResult'}
+
+    UserEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/User'}
+
+    UserStatsEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/UserStats'}
+
+    UploadEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Upload'}
+
+    UploadCheckEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/UploadCheck'}
+
+    ChunkInitEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/ChunkInit'}
+
+    BatchEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                affected: {type: integer, description: 受影响记录数}
+
+    ImageEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Image'}
+
+    ImagePageEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/Image'}
+                total: {type: integer, format: int64, description: 游标模式下为 0}
+                cursor: {type: integer, format: int64, description: 下一页游标，仅游标模式返回}
+                size: {type: integer, description: 每页条数，请求未传时可能省略}
+
+    RefererPageEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/Referer'}
+                total: {type: integer, format: int64}
+                size: {type: integer}
+
+    RefererSummaryEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/RefererSummary'}
+
+    AlbumEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Album'}
+
+    AlbumListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/Album'}
+
+    TagEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Tag'}
+
+    TagListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/Tag'}
+
+    TokenListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/Token'}
+
+    TokenCreateEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/TokenCreate'}
+
+    S3CredListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/S3Cred'}
+
+    S3CredCreateEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/S3CredCreate'}
+
+    ShareEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Share'}
+
+    ShareListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/Share'}
+
+    ShareAccessEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/ShareAccess'}
+
+    StorageEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Storage'}
+
+    StorageListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/Storage'}
+
+    StorageTestEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/StorageTest'}
+
+    HostStatListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/HostStat'}
+
+    DayStatListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/DayStat'}
+
+    DashboardEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Dashboard'}
+
+    AdminUserPageEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/AdminUser'}
+                total: {type: integer, format: int64}
+                size: {type: integer}
+
+    GroupEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Group'}
+
+    GroupListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/Group'}
+
+    SettingListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/Setting'}
+
+    LogPageEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/Log'}
+                total: {type: integer, format: int64}
+                size: {type: integer}
+
+    EmailLogPageEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/EmailLog'}
+                total: {type: integer, format: int64}
+                size: {type: integer}
+
+    InvitePageEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/Invite'}
+                total: {type: integer, format: int64}
+                size: {type: integer}
+
+    InviteListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ResponseBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: '#/components/schemas/Invite'}
